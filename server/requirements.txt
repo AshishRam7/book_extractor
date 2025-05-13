@@ -1,0 +1,10 @@
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+python-dotenv>=1.0.0
+requests>=2.25.0
+# aiofiles is not directly used in this simplified version but often useful with FastAPI's UploadFile
+python-multipart>=0.0.5
+# Jinja2 removed as we are not serving HTML templates from backend
+pypdf>=3.10.0 # For PDF page extraction
+
+# shutil, base64, logging, os, uuid, time, re, asyncio, urllib.parse, json are standard library

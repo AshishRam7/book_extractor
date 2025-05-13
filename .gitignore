@@ -1,0 +1,5 @@
+venv
+/server/.env
+/server/extracted_images
+/server/temp_uploads
+/server/processed_markdown
