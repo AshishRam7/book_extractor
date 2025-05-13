@@ -1,0 +1,47 @@
+body { /* Basic styles */
+  font-family: sans-serif; margin: 0; background-color: #f4f7f6; color: #333;
+}
+.App {
+  max-width: 900px; margin: 20px auto; padding: 20px; background-color: #fff;
+  border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+}
+.App-header { text-align: center; margin-bottom: 30px; padding-bottom: 15px; border-bottom: 1px solid #eee; }
+.App-header h1 { color: #007bff; margin: 0; }
+section { margin-bottom: 30px; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px; background-color: #fdfdfd;}
+section h2 { margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-bottom: 15px;}
+input[type="file"] { display: block; margin-bottom: 15px; }
+button {
+  background-color: #007bff; color: white; border: none; padding: 10px 15px;
+  border-radius: 4px; cursor: pointer; font-size: 1em; transition: background-color 0.2s ease-in-out;
+  margin-right: 10px; /* Add some margin between buttons */
+}
+button:hover:not(:disabled) { background-color: #0056b3; }
+button:disabled { background-color: #cccccc; cursor: not-allowed; }
+.delete-button { background-color: #dc3545; }
+.delete-button:hover:not(:disabled) { background-color: #c82333; }
+ul { list-style-type: none; padding-left: 0; }
+li { padding: 8px 0; border-bottom: 1px solid #f0f0f0; }
+li:last-child { border-bottom: none; }
+label { margin-left: 8px; cursor: pointer; }
+.error-message { color: #d9534f; background-color: #f2dede; border: 1px solid #ebccd1; padding: 10px; border-radius: 4px; margin-top: 15px;}
+pre {
+  background-color: #f8f9fa; padding: 15px; border: 1px solid #dee2e6; border-radius: 4px;
+  white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto;
+}
+a { color: #007bff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.resource-links-section div { margin-bottom: 15px; }
+.resource-links-section h4 { margin-bottom: 5px; }
+
+/* Styles for file list and page range inputs */
+.file-list { margin-top: 10px; margin-bottom: 15px; padding: 10px; background-color: #f9f9f9; border-radius: 4px;}
+.file-item { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid #eee; }
+.file-item:last-child { border-bottom: none; }
+.file-item span { flex-grow: 1; margin-right: 10px; word-break: break-all; }
+.page-range-input {
+  width: 150px; /* Adjust as needed */
+  padding: 6px;
+  border: 1px solid #ccc;
+  border-radius: 3px;
+  font-size: 0.9em;
+}

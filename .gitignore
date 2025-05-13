@@ -3,3 +3,4 @@ venv
 /server/extracted_images
 /server/temp_uploads
 /server/processed_markdown
+/node_modules
