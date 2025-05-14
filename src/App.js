@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { Document, Packer, Paragraph, TextRun } from 'docx';
-import { saveAs } from 'file-saver'; // File-saver is often used with docx for reliable downloads
+import { saveAs } from 'file-saver'; // For reliable file downloads
 
+// Use an environment variable for the API base URL
+// For local development, it defaults to localhost:8001
+// For Vercel deployment, set REACT_APP_API_BASE_URL in Vercel's environment variables
 const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8001';
 
 function App() {
@@ -184,7 +187,7 @@ function App() {
       return;
     }
     const blob = new Blob([retrievedMarkdown], { type: 'text/markdown;charset=utf-8;' });
-    saveAs(blob, `selected_chapters_${jobId || 'export'}.md`); // Using file-saver
+    saveAs(blob, `selected_chapters_${jobId || 'export'}.md`);
   };
 
   const handleDownloadDocx = async () => {
@@ -201,7 +204,7 @@ function App() {
           children: [
             new TextRun({
               text: line,
-              font: "Courier New", // Attempt to use a monospaced font
+              font: "Courier New", 
               size: 20, // Corresponds to 10pt (docx size is in half-points)
             }),
           ],
@@ -216,7 +219,7 @@ function App() {
       });
 
       const blob = await Packer.toBlob(doc);
-      saveAs(blob, `selected_chapters_${jobId || 'export'}.docx`); // Using file-saver
+      saveAs(blob, `selected_chapters_${jobId || 'export'}.docx`);
       setError(''); 
     } catch (e) {
       console.error("Error generating DOCX", e);

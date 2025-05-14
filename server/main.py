@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import List, Dict, Union, Optional, Any, Tuple
 import sys
 import shutil
-import asyncio
+# asyncio is standard, but not explicitly used for async file ops here
+# import asyncio # Keep if other async operations are planned
 import urllib.parse
 import json
 
@@ -31,7 +32,7 @@ import moondream as md # For Moondream image description
 
 # --- Configuration ---
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv() # Load environment variables from .env file
 
 # --- Load Environment Variables ---
 DATALAB_API_KEY = os.environ.get("DATALAB_API_KEY")
@@ -49,24 +50,42 @@ if missing_vars:
     logging.critical(f"FATAL ERROR: Missing essential environment variables: {', '.join(missing_vars)}")
     sys.exit(f"Missing essential environment variables: {', '.join(missing_vars)}")
 
-# Directories
-TEMP_UPLOAD_DIR = Path("temp_uploads")
-PROCESSED_MARKDOWN_DIR = Path("processed_markdown")
-EXTRACTED_IMAGES_DIR = Path("extracted_images")
-
-STATIC_DIR = Path("static") # Keep if you plan other static backend assets
-# API Timeouts and Polling
-DATALAB_POST_TIMEOUT = 120 # Increased timeout for potentially larger files/slower API
-DATALAB_POLL_TIMEOUT = 60  # Increased poll timeout
-MAX_POLLS = 300
-POLL_INTERVAL = 5 # Slightly increased poll interval
-CHAPTER_EXTRACTION_LEVELS = [1, 2, 3, 4]
-MIN_CHAPTER_CONTENT_LINES = 0
-MIN_CHAPTER_CONTENT_WORDS = 0
-
 # Configure Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - [%(funcName)s][%(lineno)d] %(message)s')
 logger = logging.getLogger(__name__)
+
+
+# --- Persistent Data Directory Configuration (for Render deployment) ---
+# Uses PERSISTENT_DATA_DIR env var if set (e.g., /mnt/data on Render)
+# Defaults to 'server_data_local' in the current working directory for local dev
+PERSISTENT_DATA_BASE_DIR = Path(os.environ.get("PERSISTENT_DATA_DIR", Path.cwd() / "server_data_local"))
+logger.info(f"Using persistent data base directory: {PERSISTENT_DATA_BASE_DIR}")
+
+# Directories based on the persistent base
+TEMP_UPLOAD_DIR = PERSISTENT_DATA_BASE_DIR / "temp_uploads"
+PROCESSED_MARKDOWN_DIR = PERSISTENT_DATA_BASE_DIR / "processed_markdown"
+EXTRACTED_IMAGES_DIR = PERSISTENT_DATA_BASE_DIR / "extracted_images"
+
+# Ensure these directories exist when the app starts
+def ensure_data_dirs_exist():
+    for dir_path in [PERSISTENT_DATA_BASE_DIR, TEMP_UPLOAD_DIR, PROCESSED_MARKDOWN_DIR, EXTRACTED_IMAGES_DIR]:
+        try:
+            dir_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Ensured directory exists: {dir_path}")
+        except Exception as e:
+            logger.error(f"Could not create directory {dir_path}: {e}", exc_info=True)
+            # Depending on severity, you might want to sys.exit() if critical dirs can't be made
+ensure_data_dirs_exist()
+
+
+# API Timeouts and Polling
+DATALAB_POST_TIMEOUT = 120
+DATALAB_POLL_TIMEOUT = 60
+MAX_POLLS = 300
+POLL_INTERVAL = 5
+CHAPTER_EXTRACTION_LEVELS = [1, 2, 3, 4]
+MIN_CHAPTER_CONTENT_LINES = 0
+MIN_CHAPTER_CONTENT_WORDS = 0
 
 # --- Initialize Moondream Model ---
 model_md = None
@@ -85,9 +104,11 @@ except Exception as e:
 app = FastAPI(title="PDF Chapter Extractor API")
 
 # CORS Configuration
+# IMPORTANT: Update this list with your Vercel frontend URL after deployment
 origins = [
-    "http://localhost:3000",
-    "http://localhost:3001",
+    "http://localhost:3000",    # Local React dev server
+    "http://localhost:3001",    # Another potential local port
+    # "https://your-frontend-app-name.vercel.app", # EXAMPLE: Replace with your Vercel URL
 ]
 
 app.add_middleware(
@@ -98,11 +119,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.mount("/extracted_images", StaticFiles(directory=EXTRACTED_IMAGES_DIR), name="extracted_images")
-app.mount("/processed_markdown_files", StaticFiles(directory=PROCESSED_MARKDOWN_DIR), name="processed_markdown_files")
+# Serve static files from the persistent disk locations
+# The "name" parameter sets the path prefix in the URL
+app.mount(f"/{EXTRACTED_IMAGES_DIR.name}", StaticFiles(directory=EXTRACTED_IMAGES_DIR), name=EXTRACTED_IMAGES_DIR.name)
+app.mount(f"/{PROCESSED_MARKDOWN_DIR.name}", StaticFiles(directory=PROCESSED_MARKDOWN_DIR), name=PROCESSED_MARKDOWN_DIR.name)
 
-for dir_path in [TEMP_UPLOAD_DIR, PROCESSED_MARKDOWN_DIR, EXTRACTED_IMAGES_DIR]:
-    dir_path.mkdir(parents=True, exist_ok=True)
 
 job_storage: Dict[str, Dict[str, Any]] = {}
 
@@ -174,8 +195,9 @@ def parse_page_ranges_to_indices(range_str: str, total_pages: int) -> Optional[L
         return None
 
 def process_pdf_pages(job_id: str, original_pdf_path: Path, page_range_str: Optional[str]) -> Path:
+    job_specific_temp_dir = TEMP_UPLOAD_DIR / job_id
     if not page_range_str or not page_range_str.strip():
-        logger.info(f"[{job_id}] No page range specified for {original_pdf_path.name}, using original PDF.")
+        logger.info(f"[{job_id}] No page range specified for {original_pdf_path.name}, using original PDF ({original_pdf_path}).")
         return original_pdf_path
     try:
         reader = pypdf.PdfReader(str(original_pdf_path))
@@ -198,8 +220,10 @@ def process_pdf_pages(job_id: str, original_pdf_path: Path, page_range_str: Opti
         for page_idx in selected_indices:
             writer.add_page(reader.pages[page_idx])
 
-        clipped_pdf_dir = TEMP_UPLOAD_DIR / job_id / "clipped_pdfs"
+        # Ensure job-specific clipped PDFs directory exists within the main TEMP_UPLOAD_DIR
+        clipped_pdf_dir = job_specific_temp_dir / "clipped_pdfs"
         clipped_pdf_dir.mkdir(parents=True, exist_ok=True)
+        # Use original_pdf_path.stem to keep a part of the original name, making it more identifiable
         clipped_pdf_path = clipped_pdf_dir / f"clipped_{original_pdf_path.stem}_{uuid.uuid4().hex[:8]}.pdf"
 
         with open(clipped_pdf_path, "wb") as f:
@@ -249,7 +273,7 @@ def call_datalab_marker(file_path: Path) -> Dict:
                 logger.info(f"Datalab processing complete for {file_path.name}.")
                 return {
                     "markdown": poll_data.get("markdown", ""),
-                    "images": poll_data.get("images", {}) # { "image_name_in_md.png": "base64data" }
+                    "images": poll_data.get("images", {}) 
                 }
             if poll_data.get("status") == "error":
                 err_msg = poll_data.get('error', 'Unknown Datalab processing error')
@@ -264,11 +288,12 @@ def call_datalab_marker(file_path: Path) -> Dict:
 
 def save_extracted_images(
     images_dict: Dict[str, str],
-    images_folder: Path,
-    job_id: str,
-    doc_safe_name: str
+    images_folder_base: Path, # This will be EXTRACTED_IMAGES_DIR / job_id / doc_safe_name
+    job_id: str, # Used for logging
+    doc_safe_name: str # Used for path construction and logging
 ) -> Tuple[Dict[str, str], List[str], Dict[str, Path]]:
-    images_folder.mkdir(parents=True, exist_ok=True)
+    # The images_folder_base is already specific to job and document
+    images_folder_base.mkdir(parents=True, exist_ok=True) 
     
     original_name_to_web_url_map: Dict[str, str] = {}
     web_image_urls_for_doc_result: List[str] = []
@@ -277,22 +302,23 @@ def save_extracted_images(
     for img_original_name_in_md, b64_data in images_dict.items():
         try:
             base_name, suffix = Path(img_original_name_in_md).stem, Path(img_original_name_in_md).suffix
-            if not suffix: suffix = ".png" # Default suffix if missing
+            if not suffix: suffix = ".png" 
             safe_img_filename_base = "".join([c for c in base_name if c.isalnum() or c in ('-', '_')]).strip() or f"image_{uuid.uuid4().hex[:8]}"
             counter = 0
             safe_img_filename_on_disk = f"{safe_img_filename_base}{suffix}"
-            image_path_on_disk_obj = images_folder / safe_img_filename_on_disk
+            image_path_on_disk_obj = images_folder_base / safe_img_filename_on_disk
 
             while image_path_on_disk_obj.exists():
                 counter += 1
                 safe_img_filename_on_disk = f"{safe_img_filename_base}_{counter}{suffix}"
-                image_path_on_disk_obj = images_folder / safe_img_filename_on_disk
+                image_path_on_disk_obj = images_folder_base / safe_img_filename_on_disk
 
             image_data = base64.b64decode(b64_data)
             with open(image_path_on_disk_obj, "wb") as img_file:
                 img_file.write(image_data)
 
-            web_url_for_md = f"/extracted_images/{job_id}/{doc_safe_name}/{safe_img_filename_on_disk}"
+            # URL path construction: /<name_of_static_mount_for_extracted_images>/<job_id>/<doc_safe_name>/<filename_on_disk>
+            web_url_for_md = f"/{EXTRACTED_IMAGES_DIR.name}/{job_id}/{doc_safe_name}/{safe_img_filename_on_disk}"
             
             original_name_to_web_url_map[img_original_name_in_md] = web_url_for_md
             original_name_to_local_disk_path_map[img_original_name_in_md] = image_path_on_disk_obj
@@ -305,18 +331,15 @@ def save_extracted_images(
     return original_name_to_web_url_map, web_image_urls_for_doc_result, original_name_to_local_disk_path_map
 
 def generate_moondream_image_description(image_path: Path, figure_caption: str = "") -> str:
-    """Generates a description for an image using the Moondream model."""
     if not model_md:
         logger.error("Moondream model not initialized. Cannot generate image description.")
         return "Error: Image description model not available."
     try:
         image = Image.open(image_path)
-        # Ensure image is in a compatible format if necessary (e.g., RGB)
         if image.mode != "RGB":
             image = image.convert("RGB")
 
         encoded_image = model_md.encode_image(image)
-        
         caption_text = figure_caption if figure_caption else "this figure"
         query_text = (
             f"Describe the key technical findings in this figure/visualization "
@@ -328,7 +351,7 @@ def generate_moondream_image_description(image_path: Path, figure_caption: str =
         )
         response = model_md.query(encoded_image, query_text)
         description = response.get("answer", "No description generated by Moondream.")
-        description = description.replace('\n', ' ').strip() # Ensure single line for MD flow
+        description = description.replace('\n', ' ').strip()
         return description
     except FileNotFoundError:
          logger.error(f"Moondream: Image file not found at {image_path}")
@@ -345,17 +368,14 @@ def enhance_markdown_with_images_and_descriptions(
 ) -> str:
     if not markdown_text.strip():
         return ""
-
     new_markdown_parts = []
     last_match_end = 0
     image_description_counter = 0
-
     figure_pattern = re.compile(r"(!\[(?P<alt_text>.*?)\]\((?P<original_path_in_md>[^)]+)\))")
 
     for match in figure_pattern.finditer(markdown_text):
         start_offset, end_offset = match.span()
-        new_markdown_parts.append(markdown_text[last_match_end:start_offset]) # Text before image
-
+        new_markdown_parts.append(markdown_text[last_match_end:start_offset])
         full_original_image_tag = match.group(0)
         alt_text = match.group("alt_text")
         original_path_in_md_encoded = match.group("original_path_in_md")
@@ -363,33 +383,22 @@ def enhance_markdown_with_images_and_descriptions(
 
         web_url = original_name_to_web_url_map.get(original_path_in_md_decoded) or \
                   original_name_to_web_url_map.get(original_path_in_md_encoded)
-        
         local_disk_path = original_name_to_local_disk_path_map.get(original_path_in_md_decoded) or \
                           original_name_to_local_disk_path_map.get(original_path_in_md_encoded)
 
         if web_url and local_disk_path:
             rewritten_image_tag = f"![{alt_text}]({web_url})"
             new_markdown_parts.append(rewritten_image_tag)
-            
-            logger.info(f"[{job_id}] Generating Moondream description for image: {local_disk_path} (Original MD Name: '{original_path_in_md_decoded}')")
             caption_for_moondream = alt_text if alt_text else "figure in document"
             description = generate_moondream_image_description(local_disk_path, caption_for_moondream)
-            
             image_description_counter += 1
             description_block = f"\n\n**Image Description (Figure {image_description_counter}):** {description}\n"
             new_markdown_parts.append(description_block)
-            logger.debug(f"[{job_id}] Rewrote and added description for '{original_path_in_md_decoded}'.")
         else:
-            # Image not found in maps, or one map missing. Remove the stray placeholder.
-            logger.warning(f"[{job_id}] Could not find mapping for image '{original_path_in_md_decoded}' (or '{original_path_in_md_encoded}'). "
-                           f"Web URL found: {bool(web_url)}, Local Path found: {bool(local_disk_path)}. Removing original tag: {full_original_image_tag}")
-            # new_markdown_parts.append("") # Effectively removes the tag
-        
+            logger.warning(f"[{job_id}] Could not find mapping for image '{original_path_in_md_decoded}'. Removing tag: {full_original_image_tag}")
         last_match_end = end_offset
-
-    new_markdown_parts.append(markdown_text[last_match_end:]) # Remaining text
+    new_markdown_parts.append(markdown_text[last_match_end:])
     return "".join(new_markdown_parts)
-
 
 def _clean_markdown_title(title: str) -> str:
     title = re.sub(r'\[([^\[\]]*)\]\(.*?\)', r'\1', title)
@@ -428,9 +437,18 @@ def extract_chapters_from_markdown(markdown_text: str, chapter_levels: List[int]
                 counter += 1
                 title_key = f"{original_title_key_base} (part {counter})"
             raw_chapters[title_key] = part_stripped
-        elif not raw_chapters and not is_header_part and len(parts) == 1:
+        elif not raw_chapters and not is_header_part and len(parts) == 1: # If only one part and it's not a header, it's the full doc
             title_key = "Full Document"
             raw_chapters[title_key] = part_stripped
+        elif not is_header_part and i == 0 and parts : # Handle content before the first recognized header
+            title_key = "Preface" # Or "Introduction", "Content before first header"
+            counter = 1
+            original_title_key_base = title_key
+            while title_key in raw_chapters:
+                counter += 1
+                title_key = f"{original_title_key_base} (part {counter})"
+            raw_chapters[title_key] = part_stripped
+
 
     final_chapters = {}
     common_toc_titles = ["contents", "table of contents", "index"]
@@ -444,14 +462,18 @@ def extract_chapters_from_markdown(markdown_text: str, chapter_levels: List[int]
 
         content_lines_after_header = content_with_header.splitlines()
         actual_content_text = ""
-        if len(content_lines_after_header) > 1:
+        # If it's "Full Document" or "Preface", the "header" is implicit, so take all content
+        if title == "Full Document" or title.startswith("Preface") or not content_lines_after_header[0].startswith("#"):
+             actual_content_text = content_with_header.strip()
+        elif len(content_lines_after_header) > 1:
             actual_content_text = "\n".join(content_lines_after_header[1:]).strip()
+        
         num_actual_content_lines = len(actual_content_text.splitlines())
         num_actual_content_words = len(actual_content_text.split())
 
         if (num_actual_content_lines < MIN_CHAPTER_CONTENT_LINES or \
             num_actual_content_words < MIN_CHAPTER_CONTENT_WORDS):
-            if len(raw_chapters) > 1:
+            if len(raw_chapters) > 1: # Only filter if there are other chapters
                 logger.info(f"Filtering out short chapter: '{title}' (actual content lines: {num_actual_content_lines}, words: {num_actual_content_words})")
                 continue
         final_chapters[title] = content_with_header
@@ -462,7 +484,12 @@ def extract_chapters_from_markdown(markdown_text: str, chapter_levels: List[int]
 
 def cleanup_job_files(job_id: str):
     logger.info(f"[{job_id}] Cleaning up ALL temporary files and directories for job...")
-    for dir_to_remove in [TEMP_UPLOAD_DIR / job_id, PROCESSED_MARKDOWN_DIR / job_id, EXTRACTED_IMAGES_DIR / job_id]:
+    # These paths are now relative to PERSISTENT_DATA_BASE_DIR
+    job_temp_upload_dir = TEMP_UPLOAD_DIR / job_id
+    job_processed_md_dir = PROCESSED_MARKDOWN_DIR / job_id
+    job_extracted_images_dir = EXTRACTED_IMAGES_DIR / job_id
+    
+    for dir_to_remove in [job_temp_upload_dir, job_processed_md_dir, job_extracted_images_dir]:
         if dir_to_remove.exists():
             try:
                 shutil.rmtree(dir_to_remove)
@@ -480,18 +507,22 @@ def run_chapter_extraction_job(job_id: str, file_processing_details: List[Dict[s
     try:
         for i, file_detail in enumerate(file_processing_details):
             original_filename = file_detail["original_filename"]
-            original_temp_disk_path = Path(file_detail["temp_disk_path"])
+            # temp_disk_path from file_detail is already an absolute path within TEMP_UPLOAD_DIR/job_id
+            original_temp_disk_path = Path(file_detail["temp_disk_path"]) 
             page_range_str = file_detail["page_range_str"]
             job_storage[job_id]["message"] = f"Processing file {i+1}/{len(file_processing_details)}: {original_filename} (Range: {page_range_str or 'All'})..."
+            
             pdf_to_process_path = process_pdf_pages(job_id, original_temp_disk_path, page_range_str)
+            
             safe_doc_name_base = Path(original_filename).stem
             safe_doc_name = "".join([c for c in safe_doc_name_base if c.isalnum() or c in ('-', '_')]).strip() or f"doc_{uuid.uuid4().hex[:8]}"
             doc_result_item = ChapterExtractionJobDocResult(original_filename=original_filename, chapters={}, image_urls=[])
             try:
                 datalab_result = call_datalab_marker(pdf_to_process_path)
                 raw_markdown_from_datalab = datalab_result.get("markdown", "")
-                images_dict_from_datalab = datalab_result.get("images", {}) # original_name_in_md: base64_data
+                images_dict_from_datalab = datalab_result.get("images", {})
 
+                # doc_specific_images_dir is EXTRACTED_IMAGES_DIR / job_id / doc_safe_name
                 doc_specific_images_dir = EXTRACTED_IMAGES_DIR / job_id / safe_doc_name
                 
                 original_name_to_web_url_map, web_urls_for_result, original_name_to_local_path_map = save_extracted_images(
@@ -507,12 +538,14 @@ def run_chapter_extraction_job(job_id: str, file_processing_details: List[Dict[s
                     job_id
                 )
                 
+                # doc_specific_markdown_dir is PROCESSED_MARKDOWN_DIR / job_id
                 doc_specific_markdown_dir = PROCESSED_MARKDOWN_DIR / job_id
-                doc_specific_markdown_dir.mkdir(parents=True, exist_ok=True)
+                doc_specific_markdown_dir.mkdir(parents=True, exist_ok=True) # Ensure job-specific md dir
                 processed_markdown_filename = f"{safe_doc_name}_processed.md"
                 processed_markdown_path_on_disk = doc_specific_markdown_dir / processed_markdown_filename
                 processed_markdown_path_on_disk.write_text(processed_markdown, encoding="utf-8")
-                doc_result_item.processed_markdown_file_url = f"/processed_markdown_files/{job_id}/{processed_markdown_filename}"
+                # URL path: /<name_of_static_mount_for_processed_markdown>/<job_id>/<filename>
+                doc_result_item.processed_markdown_file_url = f"/{PROCESSED_MARKDOWN_DIR.name}/{job_id}/{processed_markdown_filename}"
                 
                 chapters_content_map = extract_chapters_from_markdown(processed_markdown, CHAPTER_EXTRACTION_LEVELS)
                 doc_result_item.chapters = chapters_content_map
@@ -535,6 +568,18 @@ def run_chapter_extraction_job(job_id: str, file_processing_details: List[Dict[s
         job_storage[job_id]["status"] = "error"
         job_storage[job_id]["message"] = f"An unexpected error occurred during the job: {str(e)}"
         if "result" in job_storage[job_id] : job_storage[job_id]["result"] = None
+    finally:
+        # Clean up the originally uploaded (and potentially clipped) PDFs from TEMP_UPLOAD_DIR/job_id
+        # as they are no longer needed after Datalab processing.
+        # The processed markdown and extracted images are kept in their respective persistent directories.
+        job_specific_temp_dir_for_uploads = TEMP_UPLOAD_DIR / job_id
+        if job_specific_temp_dir_for_uploads.exists():
+            try:
+                shutil.rmtree(job_specific_temp_dir_for_uploads)
+                logger.info(f"[{job_id}] Cleaned up temporary upload directory: {job_specific_temp_dir_for_uploads}")
+            except Exception as e:
+                logger.warning(f"[{job_id}] Error cleaning up temporary upload directory {job_specific_temp_dir_for_uploads}: {e}")
+
 
 # --- FastAPI Endpoints ---
 @app.post("/extract-chapters", response_model=ChapterExtractionJob)
@@ -559,8 +604,9 @@ async def start_chapter_extraction(
         raise HTTPException(status_code=400, detail=f"Mismatch: {len(files)} files uploaded but {len(page_ranges)} page range strings provided.")
 
     file_processing_details_for_task = []
+    # job_upload_dir will be TEMP_UPLOAD_DIR / job_id
     job_upload_dir = TEMP_UPLOAD_DIR / job_id
-    job_upload_dir.mkdir(parents=True, exist_ok=True)
+    job_upload_dir.mkdir(parents=True, exist_ok=True) # Ensure job-specific temp dir for uploads
     job_storage[job_id] = {"status": "pending", "message": "Validating and saving files...", "result": None}
 
     try:
@@ -573,7 +619,7 @@ async def start_chapter_extraction(
                 continue
 
             safe_fn_stem = "".join(c for c in Path(file.filename).stem if c.isalnum() or c in ('-','_','.')) or f"file_{i}_{uuid.uuid4().hex[:4]}"
-            temp_file_path = job_upload_dir / f"{safe_fn_stem}.pdf"
+            temp_file_path = job_upload_dir / f"{safe_fn_stem}.pdf" # Path within TEMP_UPLOAD_DIR/job_id
 
             try:
                 file_content = await file.read()
@@ -586,7 +632,7 @@ async def start_chapter_extraction(
 
                 file_processing_details_for_task.append({
                     "original_filename": file.filename,
-                    "temp_disk_path": str(temp_file_path),
+                    "temp_disk_path": str(temp_file_path), # This is the path to the initially uploaded file
                     "page_range_str": current_page_range
                 })
                 logger.info(f"[{job_id}] Saved '{file.filename}' to '{temp_file_path}' with page range '{current_page_range or 'All'}'.")
@@ -683,7 +729,10 @@ async def get_job_status(job_id: str):
                 parsed_result_data = ChapterExtractionJobResultData(**job_info["result"])
             except Exception as e:
                 logger.error(f"[{job_id}] Error parsing job result data for status: {e}", exc_info=True)
-                job_info["message"] = (job_info.get("message", "") + " [Warning: Result data parsing issue on server.]").strip()
+                # Append to message instead of overwriting, and keep original message if it exists
+                existing_message = job_info.get("message", "")
+                error_addon = " [Warning: Result data parsing issue on server.]"
+                job_info["message"] = (existing_message + error_addon).strip()
         else:
              logger.error(f"[{job_id}] Job result is not a dictionary for completed job. Type: {type(job_info['result'])}")
 
@@ -700,17 +749,11 @@ async def delete_job_data(job_id: str):
     if job_id not in job_storage:
         logger.warning(f"[{job_id}] Attempted to delete non-existent job.")
         raise HTTPException(status_code=404, detail="Job not found.")
-    cleanup_job_files(job_id) # This will remove files from TEMP_UPLOAD_DIR, PROCESSED_MARKDOWN_DIR, EXTRACTED_IMAGES_DIR
     
-    # Attempt to remove the job_id directory from TEMP_UPLOAD_DIR as well, if it wasn't fully cleaned by cleanup_job_files
-    # This is somewhat redundant if cleanup_job_files is comprehensive, but acts as a fallback.
-    job_specific_temp_dir = TEMP_UPLOAD_DIR / job_id
-    if job_specific_temp_dir.exists():
-        try:
-            shutil.rmtree(job_specific_temp_dir)
-            logger.info(f"[{job_id}] Successfully removed job-specific temp directory: {job_specific_temp_dir}")
-        except Exception as e:
-            logger.warning(f"[{job_id}] Could not remove job-specific temp directory {job_specific_temp_dir}: {e}")
+    # cleanup_job_files handles deletion from PROCESSED_MARKDOWN_DIR/job_id and EXTRACTED_IMAGES_DIR/job_id
+    # It also cleans TEMP_UPLOAD_DIR/job_id if that's still part of its scope.
+    # The run_chapter_extraction_job already cleans up TEMP_UPLOAD_DIR/job_id contents.
+    cleanup_job_files(job_id) 
             
     del job_storage[job_id]
     logger.info(f"[{job_id}] Job data and associated files deleted successfully.")
@@ -722,11 +765,15 @@ async def health_check():
     return {"status": "ok", "message": "API is running."}
 
 if __name__ == "__main__":
-    print("To run this FastAPI application, use Uvicorn:")
-    print("Example: uvicorn server.main:app --reload --host 0.0.0.0 --port 8001")
-    print("\nEnsure you have the following environment variables set in a .env file or your environment:")
-    print("- DATALAB_API_KEY")
-    print("- DATALAB_MARKER_URL")
-    print("- MOONDREAM_API_KEY")
-    print("\nRequired Python libraries (install via pip):")
-    print("- fastapi uvicorn python-dotenv requests pypdf Pillow moondream")
+    # This part is for guidance and won't run when Uvicorn starts the app object.
+    # It is useful for local development if you run `python server/main.py`
+    # However, for production, Uvicorn is used directly.
+    print("To run this FastAPI application for development (if not using Uvicorn directly):")
+    print("Ensure .env file is in ashishram7-book_extractor/ (project root) or server/ directory.")
+    print("Example: python server/main.py (if you add uvicorn.run call below)")
+    print("Recommended: uvicorn server.main:app --reload --host 0.0.0.0 --port 8001")
+    
+    # To run with `python server/main.py` for local dev, you could add:
+    # import uvicorn
+    # uvicorn.run(app, host="0.0.0.0", port=8001)
+    # But the uvicorn command is generally preferred.
