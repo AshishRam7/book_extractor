@@ -163,15 +163,36 @@ function App() {
 
   const handleDeleteJob = async () => {
     if (!jobId) { setError("No job ID."); return; }
-    if (!window.confirm(`Delete job ${jobId}?`)) return;
+    if (!window.confirm(`Are you sure you want to delete job ${jobId} and all its associated files? This action cannot be undone.`)) return;
     setIsLoading(true); setError('');
     try {
       const response = await fetch(`${API_BASE_URL}/job/${jobId}`, { method: 'DELETE' });
-      const data = await response.json(); // Expects JSON response even for DELETE
-      if (!response.ok) { setError(data.detail || 'Failed to delete job.'); }
-      else { alert(data.message || "Job deleted."); resetUIForNewJob(true); }
+      if (!response.ok) { 
+        const errorData = await response.json().catch(() => ({detail: 'Failed to delete job and parse error.'}));
+        setError(errorData.detail || `Failed to delete job (HTTP ${response.status}).`); 
+      } else { 
+        const data = await response.json().catch(() => ({message: 'Job deleted.'})); // Graceful catch if response isn't json
+        alert(data.message || "Job deleted successfully."); 
+        resetUIForNewJob(true); 
+      }
     } catch (err) { console.error('Delete error:', err); setError('Network error deleting job.');}
     finally { setIsLoading(false); }
+  };
+
+  const handleDownloadMarkdown = () => {
+    if (!retrievedMarkdown) {
+      setError('No content to download.');
+      return;
+    }
+    const blob = new Blob([retrievedMarkdown], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `selected_chapters_${jobId || 'export'}.md`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -212,7 +233,7 @@ function App() {
             <p><strong>Status:</strong> {jobStatus}</p>
             <p><strong>Message:</strong> {jobMessage}</p>
             {isLoading && (jobStatus !== 'Uploading and starting job...') && <p>Loading...</p>}
-            {jobId && !isLoading && <button onClick={handleDeleteJob} className="delete-button">Delete Job</button>}
+            {jobId && !isLoading && <button onClick={handleDeleteJob} className="delete-button">Delete Job & Files</button>}
           </section>
         )}
 
@@ -227,13 +248,19 @@ function App() {
                 </li>))}
               </ul>) : <p>No chapters identified.</p>}
             {jobResult.all_available_chapters.length > 0 &&
-              <button onClick={handleGetSelectedChapters} disabled={isLoading}>{isLoading ? 'Fetching...' : 'Get Content'}</button>}
+              <button onClick={handleGetSelectedChapters} disabled={isLoading || Object.values(selectedChapterCheckboxes).every(v => !v)}>
+                {isLoading && retrievedMarkdown === 'Fetching...' ? 'Fetching...' : 'Get Selected Content'}
+              </button>}
           </section>
         )}
 
         {retrievedMarkdown && (
           <section className="markdown-display-section">
-            <h2>4. Selected Content</h2><pre>{retrievedMarkdown}</pre>
+            <h2>4. Selected Content</h2>
+            <pre>{retrievedMarkdown}</pre>
+            <button onClick={handleDownloadMarkdown} disabled={!retrievedMarkdown || retrievedMarkdown === 'Fetching...' || retrievedMarkdown === 'No content.'}>
+              Download as MD
+            </button>
           </section>
         )}
 
@@ -243,12 +270,14 @@ function App() {
             {jobResult.documents.map((doc, idx) => (
               <div key={doc.original_filename + idx}>
                 <h4>{doc.original_filename}</h4>
-                {doc.processed_markdown_file_url && <p><a href={`${API_BASE_URL}${doc.processed_markdown_file_url}`} target="_blank" rel="noopener noreferrer">Full Markdown</a></p>}
+                {doc.processed_markdown_file_url && <p><a href={`${API_BASE_URL}${doc.processed_markdown_file_url}`} target="_blank" rel="noopener noreferrer">Full Processed Markdown</a></p>}
                 {doc.image_urls && doc.image_urls.length > 0 && (<>
-                  <p>Images:</p><ul>{doc.image_urls.map((url, i) => (
+                  <p>Images (click to view):</p><ul>{doc.image_urls.map((url, i) => (
                     <li key={url+i}><a href={`${API_BASE_URL}${url}`} target="_blank" rel="noopener noreferrer">{url.substring(url.lastIndexOf('/') + 1)}</a></li>
                   ))}</ul></>)}
-                {doc.chapters && doc.chapters.Error && <p className="error-message">Doc Error: {doc.chapters.Error}</p>}
+                {doc.chapters && Object.keys(doc.chapters).length === 1 && doc.chapters["Error processing this document"] &&
+                  <p className="error-message">Document Error: {doc.chapters["Error processing this document"]}</p>
+                }
               </div>))}
           </section>
         )}
