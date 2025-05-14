@@ -316,9 +316,11 @@ def generate_moondream_image_description(image_path: Path, figure_caption: str =
             image = image.convert("RGB")
 
         encoded_image = model_md.encode_image(image)
+        
+        caption_text = figure_caption if figure_caption else "this figure"
         query_text = (
             f"Describe the key technical findings in this figure/visualization "
-            f"Illustrate and mention trends in detail, "
+            f"captioned: {caption_text}. Illustrate and mention trends in detail, "
             f"patterns, and numerical values that can be observed. Provide a scientific/academic styled mid-sized, "
             f"single paragraph summary that is highly insightful in the context of the document and caption. "
             f"Make sure to include and mention all technical/stats/numbers/formulas etc... as details without ignoring any in the paragraph. "
@@ -348,8 +350,6 @@ def enhance_markdown_with_images_and_descriptions(
     last_match_end = 0
     image_description_counter = 0
 
-    # Regex to find Markdown image tags: ![alt_text](original_path)
-    # It captures the full tag, alt text, and original path.
     figure_pattern = re.compile(r"(!\[(?P<alt_text>.*?)\]\((?P<original_path_in_md>[^)]+)\))")
 
     for match in figure_pattern.finditer(markdown_text):
@@ -361,7 +361,6 @@ def enhance_markdown_with_images_and_descriptions(
         original_path_in_md_encoded = match.group("original_path_in_md")
         original_path_in_md_decoded = urllib.parse.unquote(original_path_in_md_encoded)
 
-        # Try decoded path first, then encoded path for map lookups
         web_url = original_name_to_web_url_map.get(original_path_in_md_decoded) or \
                   original_name_to_web_url_map.get(original_path_in_md_encoded)
         
@@ -369,7 +368,6 @@ def enhance_markdown_with_images_and_descriptions(
                           original_name_to_local_disk_path_map.get(original_path_in_md_encoded)
 
         if web_url and local_disk_path:
-            # Successfully found image, rewrite tag and add description
             rewritten_image_tag = f"![{alt_text}]({web_url})"
             new_markdown_parts.append(rewritten_image_tag)
             
@@ -381,12 +379,11 @@ def enhance_markdown_with_images_and_descriptions(
             description_block = f"\n\n**Image Description (Figure {image_description_counter}):** {description}\n"
             new_markdown_parts.append(description_block)
             logger.debug(f"[{job_id}] Rewrote and added description for '{original_path_in_md_decoded}'.")
-
         else:
-            # Image not found in maps, or one map missing. Keep original tag.
-            new_markdown_parts.append(full_original_image_tag)
+            # Image not found in maps, or one map missing. Remove the stray placeholder.
             logger.warning(f"[{job_id}] Could not find mapping for image '{original_path_in_md_decoded}' (or '{original_path_in_md_encoded}'). "
-                           f"Web URL found: {bool(web_url)}, Local Path found: {bool(local_disk_path)}. Keeping original tag.")
+                           f"Web URL found: {bool(web_url)}, Local Path found: {bool(local_disk_path)}. Removing original tag: {full_original_image_tag}")
+            # new_markdown_parts.append("") # Effectively removes the tag
         
         last_match_end = end_offset
 
@@ -497,13 +494,11 @@ def run_chapter_extraction_job(job_id: str, file_processing_details: List[Dict[s
 
                 doc_specific_images_dir = EXTRACTED_IMAGES_DIR / job_id / safe_doc_name
                 
-                # Save images and get mappings
                 original_name_to_web_url_map, web_urls_for_result, original_name_to_local_path_map = save_extracted_images(
                     images_dict_from_datalab, doc_specific_images_dir, job_id, safe_doc_name
                 )
                 doc_result_item.image_urls = web_urls_for_result
 
-                # Enhance markdown with image descriptions and updated paths
                 logger.info(f"[{job_id}] Enhancing markdown with image descriptions for {original_filename}...")
                 processed_markdown = enhance_markdown_with_images_and_descriptions(
                     raw_markdown_from_datalab,
@@ -555,7 +550,7 @@ async def start_chapter_extraction(
         raise HTTPException(status_code=400, detail="No files uploaded.")
 
     if page_ranges is not None and not isinstance(page_ranges, list):
-        if len(files) == 1 and isinstance(page_ranges, str): # Handle single file case where form data might not be a list
+        if len(files) == 1 and isinstance(page_ranges, str): 
             page_ranges = [page_ranges]
         else:
              raise HTTPException(status_code=400, detail=f"Page ranges format error. Expected a list of ranges, got {type(page_ranges)}.")
@@ -656,9 +651,6 @@ async def get_selected_chapters_content(job_id: str, request_data: SelectedChapt
         for doc_res in job_result.documents:
             if doc_res.original_filename == req_chap_info.doc_filename:
                 if req_chap_info.chapter_title in doc_res.chapters:
-                    # REMOVED THE PREPENDED HEADER
-                    # chapter_header = f"# From Document: {doc_res.original_filename}\n## Chapter: {req_chap_info.chapter_title}\n\n"
-                    # selected_md_parts.append(chapter_header + doc_res.chapters[req_chap_info.chapter_title])
                     selected_md_parts.append(doc_res.chapters[req_chap_info.chapter_title])
                     found_count += 1
                     found_specific_chapter = True
@@ -692,17 +684,14 @@ async def get_job_status(job_id: str):
             except Exception as e:
                 logger.error(f"[{job_id}] Error parsing job result data for status: {e}", exc_info=True)
                 job_info["message"] = (job_info.get("message", "") + " [Warning: Result data parsing issue on server.]").strip()
-                # Do not set parsed_result_data to None here, let the model handle it or set it to a default
-                # if ChapterExtractionJob.result can be None
         else:
              logger.error(f"[{job_id}] Job result is not a dictionary for completed job. Type: {type(job_info['result'])}")
-             # parsed_result_data will remain None
 
     return ChapterExtractionJob(
         job_id=job_id,
         status=job_info.get("status", "unknown"),
         message=job_info.get("message"),
-        result=parsed_result_data # This will be None if parsing failed or result was not a dict
+        result=parsed_result_data 
     )
 
 @app.delete("/job/{job_id}", status_code=200)
@@ -711,7 +700,18 @@ async def delete_job_data(job_id: str):
     if job_id not in job_storage:
         logger.warning(f"[{job_id}] Attempted to delete non-existent job.")
         raise HTTPException(status_code=404, detail="Job not found.")
-    cleanup_job_files(job_id)
+    cleanup_job_files(job_id) # This will remove files from TEMP_UPLOAD_DIR, PROCESSED_MARKDOWN_DIR, EXTRACTED_IMAGES_DIR
+    
+    # Attempt to remove the job_id directory from TEMP_UPLOAD_DIR as well, if it wasn't fully cleaned by cleanup_job_files
+    # This is somewhat redundant if cleanup_job_files is comprehensive, but acts as a fallback.
+    job_specific_temp_dir = TEMP_UPLOAD_DIR / job_id
+    if job_specific_temp_dir.exists():
+        try:
+            shutil.rmtree(job_specific_temp_dir)
+            logger.info(f"[{job_id}] Successfully removed job-specific temp directory: {job_specific_temp_dir}")
+        except Exception as e:
+            logger.warning(f"[{job_id}] Could not remove job-specific temp directory {job_specific_temp_dir}: {e}")
+            
     del job_storage[job_id]
     logger.info(f"[{job_id}] Job data and associated files deleted successfully.")
     return {"job_id": job_id, "message": f"Job {job_id} and associated files deleted successfully."}
@@ -722,7 +722,6 @@ async def health_check():
     return {"status": "ok", "message": "API is running."}
 
 if __name__ == "__main__":
-    # This part is for guidance and won't run when Uvicorn starts the app object.
     print("To run this FastAPI application, use Uvicorn:")
     print("Example: uvicorn server.main:app --reload --host 0.0.0.0 --port 8001")
     print("\nEnsure you have the following environment variables set in a .env file or your environment:")

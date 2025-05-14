@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
+import { Document, Packer, Paragraph, TextRun } from 'docx';
+import { saveAs } from 'file-saver'; // File-saver is often used with docx for reliable downloads
 
-const API_BASE_URL = 'http://localhost:8001';
+const API_BASE_URL = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8001';
 
 function App() {
-  const [selectedFiles, setSelectedFiles] = useState([]); // Changed to array for multiple files
-  const [pageRanges, setPageRanges] = useState({}); // Stores { fileIndex: "range_string" }
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [pageRanges, setPageRanges] = useState({});
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState('');
   const [jobMessage, setJobMessage] = useState('');
@@ -16,7 +18,7 @@ function App() {
   const [error, setError] = useState('');
 
   const pollingIntervalRef = useRef(null);
-  const fileInputRef = useRef(null); // Ref for file input
+  const fileInputRef = useRef(null); 
 
   useEffect(() => {
     return () => {
@@ -37,20 +39,19 @@ function App() {
     if (clearFiles) {
         setSelectedFiles([]);
         setPageRanges({});
-        if(fileInputRef.current) fileInputRef.current.value = ""; // Clear file input display
+        if(fileInputRef.current) fileInputRef.current.value = ""; 
     }
   };
 
   const handleFileChange = (event) => {
     const files = Array.from(event.target.files);
     setSelectedFiles(files);
-    // Reset page ranges for new set of files
     const newPageRanges = {};
     files.forEach((_, index) => {
-      newPageRanges[index] = ""; // Initialize with empty string
+      newPageRanges[index] = ""; 
     });
     setPageRanges(newPageRanges);
-    resetUIForNewJob(false); // Don't clear files here, just job state
+    resetUIForNewJob(false); 
   };
 
   const handlePageRangeChange = (fileIndex, value) => {
@@ -73,10 +74,8 @@ function App() {
       formData.append('files', file);
     });
 
-    // Append page_ranges for each file in the correct order
-    // Backend expects a list of strings for page_ranges, one for each file
     selectedFiles.forEach((_, index) => {
-        formData.append('page_ranges', pageRanges[index] || ""); // Send empty string if no range specified
+        formData.append('page_ranges', pageRanges[index] || ""); 
     });
 
 
@@ -146,9 +145,9 @@ function App() {
     const chaptersToRetrieve = jobResult.all_available_chapters
       .filter((_, index) => selectedChapterCheckboxes[index])
       .map(chap => ({ doc_filename: chap.doc_filename, chapter_title: chap.chapter_title }));
-    if (chaptersToRetrieve.length === 0) { setError('Please select chapters.'); return; }
+    if (chaptersToRetrieve.length === 0) { setError('Please select chapters to retrieve.'); return; }
 
-    setIsLoading(true); setError(''); setRetrievedMarkdown('Fetching...');
+    setIsLoading(true); setError(''); setRetrievedMarkdown('Fetching selected content...');
     try {
       const response = await fetch(`${API_BASE_URL}/get-selected-chapters/${jobId}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -156,44 +155,77 @@ function App() {
       });
       const data = await response.json();
       if (!response.ok) { setError(data.detail || 'Failed to retrieve chapters.'); setRetrievedMarkdown(''); }
-      else { setRetrievedMarkdown(data.selected_markdown_content || 'No content.'); setJobMessage(prev => `${prev} | ${data.message}`); }
+      else { setRetrievedMarkdown(data.selected_markdown_content || 'No content found for selected chapters.'); setJobMessage(prev => `${prev} | ${data.message}`); }
     } catch (err) { console.error('Retrieve error:', err); setError('Network error retrieving chapters.'); setRetrievedMarkdown('');}
     finally { setIsLoading(false); }
   };
 
   const handleDeleteJob = async () => {
-    if (!jobId) { setError("No job ID."); return; }
+    if (!jobId) { setError("No job ID available to delete."); return; }
     if (!window.confirm(`Are you sure you want to delete job ${jobId} and all its associated files? This action cannot be undone.`)) return;
     setIsLoading(true); setError('');
     try {
       const response = await fetch(`${API_BASE_URL}/job/${jobId}`, { method: 'DELETE' });
       if (!response.ok) { 
-        const errorData = await response.json().catch(() => ({detail: 'Failed to delete job and parse error.'}));
+        const errorData = await response.json().catch(() => ({detail: 'Failed to delete job and parse error response.'}));
         setError(errorData.detail || `Failed to delete job (HTTP ${response.status}).`); 
       } else { 
-        const data = await response.json().catch(() => ({message: 'Job deleted.'})); // Graceful catch if response isn't json
+        const data = await response.json().catch(() => ({message: 'Job deleted successfully.'})); 
         alert(data.message || "Job deleted successfully."); 
         resetUIForNewJob(true); 
       }
-    } catch (err) { console.error('Delete error:', err); setError('Network error deleting job.');}
+    } catch (err) { console.error('Delete error:', err); setError('Network error during job deletion.');}
     finally { setIsLoading(false); }
   };
 
   const handleDownloadMarkdown = () => {
-    if (!retrievedMarkdown) {
-      setError('No content to download.');
+    if (!retrievedMarkdown || retrievedMarkdown === 'Fetching selected content...' || retrievedMarkdown === 'No content found for selected chapters.') {
+      setError('No content available to download.');
       return;
     }
     const blob = new Blob([retrievedMarkdown], { type: 'text/markdown;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute('download', `selected_chapters_${jobId || 'export'}.md`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    saveAs(blob, `selected_chapters_${jobId || 'export'}.md`); // Using file-saver
   };
+
+  const handleDownloadDocx = async () => {
+    if (!retrievedMarkdown || retrievedMarkdown === 'Fetching selected content...' || retrievedMarkdown === 'No content found for selected chapters.') {
+      setError('No content available to download as DOCX.');
+      return;
+    }
+    setIsLoading(true);
+    setError('Generating DOCX...');
+
+    try {
+      const paragraphs = retrievedMarkdown.split('\n').map(line => 
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: line,
+              font: "Courier New", // Attempt to use a monospaced font
+              size: 20, // Corresponds to 10pt (docx size is in half-points)
+            }),
+          ],
+        })
+      );
+
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: paragraphs,
+        }],
+      });
+
+      const blob = await Packer.toBlob(doc);
+      saveAs(blob, `selected_chapters_${jobId || 'export'}.docx`); // Using file-saver
+      setError(''); 
+    } catch (e) {
+      console.error("Error generating DOCX", e);
+      setError('Failed to generate DOCX. Check console for details.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
 
   return (
     <div className="App">
@@ -224,7 +256,7 @@ function App() {
           </button>
         </section>
 
-        {error && <p className="error-message">Error: {error}</p>}
+        {error && <p className="error-message">{error}</p>}
 
         {jobId && (
           <section className="job-status-section">
@@ -232,7 +264,7 @@ function App() {
             <p><strong>Job ID:</strong> {jobId}</p>
             <p><strong>Status:</strong> {jobStatus}</p>
             <p><strong>Message:</strong> {jobMessage}</p>
-            {isLoading && (jobStatus !== 'Uploading and starting job...') && <p>Loading...</p>}
+            {isLoading && (jobStatus !== 'Uploading and starting job...' && error !== 'Generating DOCX...') && <p>Loading...</p>}
             {jobId && !isLoading && <button onClick={handleDeleteJob} className="delete-button">Delete Job & Files</button>}
           </section>
         )}
@@ -249,7 +281,7 @@ function App() {
               </ul>) : <p>No chapters identified.</p>}
             {jobResult.all_available_chapters.length > 0 &&
               <button onClick={handleGetSelectedChapters} disabled={isLoading || Object.values(selectedChapterCheckboxes).every(v => !v)}>
-                {isLoading && retrievedMarkdown === 'Fetching...' ? 'Fetching...' : 'Get Selected Content'}
+                {isLoading && retrievedMarkdown === 'Fetching selected content...' ? 'Fetching...' : 'Get Selected Content'}
               </button>}
           </section>
         )}
@@ -257,9 +289,16 @@ function App() {
         {retrievedMarkdown && (
           <section className="markdown-display-section">
             <h2>4. Selected Content</h2>
-            <pre>{retrievedMarkdown}</pre>
-            <button onClick={handleDownloadMarkdown} disabled={!retrievedMarkdown || retrievedMarkdown === 'Fetching...' || retrievedMarkdown === 'No content.'}>
+            <pre>{retrievedMarkdown}</pre> 
+            <button 
+              onClick={handleDownloadMarkdown} 
+              disabled={isLoading || !retrievedMarkdown || retrievedMarkdown === 'Fetching selected content...' || retrievedMarkdown === 'No content found for selected chapters.'}>
               Download as MD
+            </button>
+            <button 
+              onClick={handleDownloadDocx}
+              disabled={isLoading || !retrievedMarkdown || retrievedMarkdown === 'Fetching selected content...' || retrievedMarkdown === 'No content found for selected chapters.'}>
+              {isLoading && error === 'Generating DOCX...' ? 'Generating DOCX...' : 'Download as DOCX'}
             </button>
           </section>
         )}
